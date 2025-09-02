@@ -1,0 +1,911 @@
+---
+title: "CD31 / Ki67 analysis"
+subtitle: "Mai Tram Vo / Giovanna Tosato lab"
+date: "2025-08-07"
+author: "Andy D. Tran, CCR Microscopy Core, LCBG, CCR, NCI"
+format: 
+  html:
+    toc: true
+    self-contained: true
+    code-fold: true
+    theme: cerulean
+execute: 
+  eval: false
+editor: visual
+---
+
+![](images/Confocal_core_icon_transparent_small-01.png)
+
+# Overview
+
+![](images/clipboard-384071365.png)
+
+![](images/clipboard-3109343257.png)
+
+![](images/clipboard-4236879705.png)
+
+# Image analysis
+
+Written in Python (v.3.12.9)
+
+## Setup
+
+```{python}
+#| label: Python setup 
+
+import os
+import numpy as np 
+import pandas as pd
+import napari
+import re
+
+from scipy import ndimage as nd
+from tifffile import imread, imwrite, TiffFile
+from cellpose import models
+from skimage.measure import label, regionprops
+from skimage.segmentation import expand_labels
+from skimage.filters import threshold_otsu, threshold_li, difference_of_gaussians
+from imageio import imread as png_imread
+from tqdm import tqdm
+```
+
+### Set Cellpose model path
+
+```{python}
+
+nuc_model_path = '/Volumes/LECIMAGE/Analysis/[NCI] [LCO] Giovanna Tosato/Mai Tram Vo/training/nuclei/models/vom_nuclei_02'
+nuc_model = models.CellposeModel(gpu = True, pretrained_model = nuc_model_path)
+```
+
+### Set base path and choose image set
+
+```{python}
+
+base_path = r'/Volumes/LECIMAGE/Analysis/[NCI] [LCO] Giovanna Tosato/Mai Tram Vo/images/cd31'
+
+set_list = os.listdir(base_path)
+set_list.remove('.DS_Store')
+print(set_list)
+print(len(set_list))
+```
+
+```{python}
+
+set_name = set_list[0]
+set_path = os.path.join(base_path, set_name)
+
+tmp_list = os.listdir(set_path)
+img_list = [] 
+
+for tmp in tmp_list:
+  if re.search('Merged.tif', tmp):
+    img_list.append(tmp)
+    
+print(img_list)
+print(len(img_list))
+```
+
+## Segment nuclei and CD31 areas
+
+```{python}
+
+for img_name in img_list:
+  print(img_name)
+  print(str(img_list.index(img_name)) + '/' + str(len(img_list)))
+  
+  img_path = os.path.join(set_path, img_name)
+  img = imread(img_path)
+  print(img.shape)
+  
+  img_dapi = img[0, :, :]
+  img_ki67 = img[1, :, :]
+  img_cd31 = img[2, :, :]
+  
+  label_nuc, flows, styles = nuc_model.eval(img_dapi, channels = [1, 0])
+  label_nuc_path = os.path.join(set_path, img_name.replace('.tif', '_nuc.tif'))
+  imwrite(label_nuc_path, label_nuc)
+  
+  img_flat = nd.gaussian_filter(img_cd31, sigma = 50)
+  img_flat = np.where(img_flat == 0, 1, img_flat)
+  
+  img_cd31_corr = img_cd31 / img_flat
+  img_cd31_denoise = difference_of_gaussians(img_cd31_corr, 3, 5)
+  
+  threshold_cd31 = threshold_otsu(img_cd31_denoise)
+  mask_cd31 = img_cd31_denoise >= threshold_cd31
+  label_cd31_tmp = label(mask_cd31)
+  label_cd31 = np.zeros_like(label_cd31_tmp)
+  roi_props = regionprops(label_cd31_tmp, intensity_image = img_cd31)
+  for roi in roi_props:
+    if (roi.mean_intensity >= 10):
+      label_cd31[label_cd31_tmp == roi.label] = roi.label
+  label_cd31 = np.uint16(label_cd31)
+  label_cd31_path = os.path.join(set_path, img_name.replace('.tif', '_label_cd31.tif'))
+  imwrite(label_cd31_path, label_cd31)  
+  
+  mask_tumor = expand_labels(label_nuc, distance = 5)
+  mask_tumor = np.where(mask_tumor > 0, 255, 0)
+  mask_tumor = np.uint8(mask_tumor)
+  mask_tumor_path = os.path.join(set_path, img_name.replace('.tif', '_mask_tumor.tif'))
+  imwrite(mask_tumor_path, mask_tumor)
+  
+```
+
+## View segmentation
+
+```{python}
+
+img_name = img_list[3]
+print(img_name)
+
+img_path = os.path.join(set_path, img_name)
+img = imread(img_path)
+
+img_dapi = img[0, :, :]
+img_ki67 = img[1, :, :]
+img_cd31 = img[2, :, :]
+
+label_nuc_path = os.path.join(set_path, img_name.replace('.tif', '_nuc.tif'))
+label_nuc = imread(label_nuc_path)
+
+label_cd31_path = os.path.join(set_path, img_name.replace('.tif', '_label_cd31.tif'))
+label_cd31 = imread(label_cd31_path)
+
+mask_tumor_path = os.path.join(set_path, img_name.replace('.tif', '_mask_tumor.tif'))
+mask_tumor = imread(mask_tumor_path)
+
+viewer = napari.Viewer()
+
+dapi_layer = viewer.add_image(
+  img_dapi,
+  colormap = 'blue',
+  blending = 'additive'
+)
+
+ki67_layer = viewer.add_image(
+  img_ki67,
+  colormap = 'green',
+  blending = 'additive'
+)
+
+cd31_layer = viewer.add_image(
+  img_cd31,
+  colormap = 'red',
+  blending = 'additive'
+)
+
+nuc_layer = viewer.add_labels(
+  label_nuc
+)
+
+seg_layer = viewer.add_labels(
+  label_cd31
+)
+
+mask_layer = viewer.add_labels(
+  mask_tumor
+)
+
+napari.run()
+```
+
+### Nuclear segmentation
+
+::: panel-tabset
+#### DAPI
+
+![DAPI](images/0708_25_CON37_dapi.png)
+
+#### Nuclei
+
+![Nuclear segmentation](images/0708_25_CON37_nuc.png)
+:::
+
+### CD31 segmentation
+
+::: panel-tabset
+#### CD31
+
+![CD31](images/0708_25_CON37_cd31.png)
+
+#### Segmentation
+
+![CD31 segmentation](images/0708_25_CON37_seg.png)
+:::
+
+### Combined
+
+::: panel-tabset
+#### Original
+
+![Original](images/0708_25_CON37_orig.png)
+
+#### Tumor mask
+
+![Tumor mask](images/0708_25_CON37_tumor.png)
+
+#### Nuclear segmentation
+
+![Nuclear segmentation](images/0708_25_CON37_orig_nuc.png)
+
+#### CD31 segmentation
+
+![CD31 segmentation](images/0708_25_CON37_orig_seg.png)
+:::
+
+## Image quantification
+
+### Define function
+
+```{python}
+
+def roi_quant(label_img, label_nuc, label_cd31, img_ki67):
+  df = pd.DataFrame()
+  
+  roi_id = []
+  nuc_id = [] 
+  cd31_id = [] 
+  area = []
+  ki67_int = [] 
+  
+  nuc_props = regionprops(label_img, intensity_image = label_nuc)
+  cd31_props = regionprops(label_img, intensity_image = label_cd31)
+  ki67_props = regionprops(label_img, intensity_image = img_ki67)
+  
+  for roi in tqdm(range(len(nuc_props))):
+    roi_id.append(nuc_props[roi].label)
+    nuc_id.append(round(nuc_props[roi].mean_intensity))
+    cd31_id.append(round(cd31_props[roi].mean_intensity))
+    area.append(nuc_props[roi].area)
+    ki67_int.append(ki67_props[roi].mean_intensity)
+    
+  df['roi_id'] = roi_id
+  df['nuc_id'] = nuc_id
+  df['cd31_id'] = cd31_id
+  df['area'] = area
+  df['ki67_int'] = ki67_int
+  
+  return df
+```
+
+### Set path
+
+```{python}
+
+set_name = set_list[3]
+set_path = os.path.join(base_path, set_name)
+
+tmp_list = os.listdir(set_path)
+img_list = [] 
+
+for tmp in tmp_list:
+  if re.search('Merged.tif', tmp):
+    img_list.append(tmp)
+    
+print(img_list)
+print(len(img_list))
+```
+
+### Quantify images
+
+```{python}
+
+for img_name in img_list:
+  print(img_name)
+  print(str(img_list.index(img_name)) + '/' + str(len(img_list)))
+  
+  img_path = os.path.join(set_path, img_name)
+  img = imread(img_path)
+  print(img.shape)
+  img_meta = TiffFile(img_path)
+  x_stats = img_meta.pages[0].tags['XResolution'].value
+  total_microns = x_stats[1] * 10000
+  total_pixels = x_stats[0]
+  pixel_scale = total_microns / total_pixels
+  print(pixel_scale)
+  
+  img_dapi = img[0, :, :]
+  img_ki67 = img[1, :, :]
+  img_cd31 = img[2, :, :]
+  
+  label_nuc_path = os.path.join(set_path, img_name.replace('.tif', '_nuc.tif'))
+  label_nuc = imread(label_nuc_path)
+  
+  label_cd31_path = os.path.join(set_path, img_name.replace('.tif', '_label_cd31.tif'))
+  label_cd31 = imread(label_cd31_path)
+  
+  mask_tumor_path = os.path.join(set_path, img_name.replace('.tif', '_mask_tumor.tif'))
+  mask_tumor = imread(mask_tumor_path)
+  
+  df_tumor = roi_quant(mask_tumor, label_nuc, label_cd31, img_ki67)
+  df_tumor['pixel_scale'] = pixel_scale
+  df_tumor_path = os.path.join(set_path, img_name.replace('.tif', '_tumor_output.csv'))
+  df_tumor.to_csv(df_tumor_path, header = True)
+  
+  df_cd31 = roi_quant(label_cd31, label_nuc, label_cd31, img_ki67)
+  df_cd31['pixel_scale'] = pixel_scale
+  df_cd31_path = os.path.join(set_path, img_name.replace('.tif', '_cd31_output.csv'))
+  df_cd31.to_csv(df_cd31_path, header = True)
+  
+  df_nuc = roi_quant(label_nuc, label_nuc, label_cd31, img_ki67)
+  df_nuc['pixel_scale'] = pixel_scale
+  df_nuc_path = os.path.join(set_path, img_name.replace('.tif', '_nuc_output.csv'))
+  df_nuc.to_csv(df_nuc_path, header = True)
+```
+
+# Data analysis
+
+Written in R v4.5.0
+
+## Load libraries and theme
+
+```{r}
+#| label: R setup
+#| eval: true
+#| echo: false
+#| message: false 
+
+library(tidyverse)
+
+theme <- theme(panel.grid.major=element_blank(),
+               panel.grid.minor=element_blank(),
+               panel.background=element_blank(),
+               axis.line=element_line(color="black", linewidth=1),
+               axis.ticks=element_line(color="black", linewidth=1),
+               text=element_text(size=18),
+               plot.title=element_text(size=24),
+               axis.text=element_text(color="black"),
+               plot.margin=unit(c(0.5, 0.5, 0.5, 0.5), "cm"))
+```
+
+## Download data
+
+### Define data open function
+
+```{r}
+#| eval: true 
+#| echo: false 
+#| message: false 
+
+csv_open <- function(set_path, output_name){
+  csv_list <- list.files(set_path, pattern = output_name)
+  for(csv_name in csv_list){
+    csv_path <- file.path(set_path, csv_name)
+    print(csv_name)
+    csv_tmp <- read_csv(csv_path) %>% 
+      mutate(image = str_replace(csv_name, output_name, '')) %>% 
+      mutate(
+        pixel_scale = as.numeric(pixel_scale),
+        roi_id = as.integer(roi_id),
+        nuc_id = as.integer(nuc_id),
+        cd31_id = as.integer(cd31_id),
+        area = as.integer(area),
+        ki67_int = as.numeric(ki67_int)
+      ) %>% 
+      select(
+        image,
+        pixel_scale,
+        roi_id,
+        nuc_id,
+        cd31_id,
+        area,
+        ki67_int
+      )
+    df_tmp <- full_join(df_tmp, csv_tmp)
+  }
+  return(df_tmp)
+}
+
+```
+
+### Define paths
+
+```{r}
+#| eval: true 
+
+base_path <- '/Volumes/LECIMAGE/Analysis/[NCI] [LCO] Giovanna Tosato/Mai Tram Vo/images/cd31'
+
+output_path <- '/Volumes/LECIMAGE/Analysis/[NCI] [LCO] Giovanna Tosato/Mai Tram Vo/results/cd31_ki67_analysis'
+
+```
+
+### Get data
+
+```{r}
+#| eval: true 
+#| echo: false 
+#| message: false 
+
+df_tmp <- tibble(
+  image = character(),
+  pixel_scale = numeric(),
+  roi_id = integer(),
+  nuc_id = integer(),
+  cd31_id = integer(),
+  area = integer(),
+  ki67_int = numeric()
+)
+
+set_list <- list.files(base_path)
+print(set_list)
+
+df_tumor <- tibble(
+  date = character(),
+  image = character(),
+  pixel_scale = numeric(),
+  roi_id = integer(),
+  nuc_id = integer(),
+  cd31_id = integer(),
+  area = integer(),
+  ki67_int = numeric()
+)
+
+for(set_name in set_list){
+  set_path <- file.path(base_path, set_name)
+  df_out <- csv_open(set_path, '_tumor_output.csv') %>% 
+    mutate(date = set_name)
+  df_tumor <- full_join(df_tumor, df_out)
+}
+
+df_cd31 <- tibble(
+  date = character(),
+  image = character(),
+  pixel_scale = numeric(),
+  roi_id = integer(),
+  nuc_id = integer(),
+  cd31_id = integer(),
+  area = integer(),
+  ki67_int = numeric()
+)
+
+for(set_name in set_list){
+  set_path <- file.path(base_path, set_name)
+  df_out <- csv_open(set_path, '_cd31_output.csv') %>% 
+    mutate(date = set_name)
+  df_cd31 <- full_join(df_cd31, df_out)
+}
+
+df_nuc <- tibble(
+  date = character(),
+  image = character(),
+  pixel_scale = numeric(),
+  roi_id = integer(),
+  nuc_id = integer(),
+  cd31_id = integer(),
+  area = integer(),
+  ki67_int = numeric()
+)
+
+for(set_name in set_list){
+  set_path <- file.path(base_path, set_name)
+  df_out <- csv_open(set_path, '_nuc_output.csv') %>% 
+    mutate(date = set_name)
+  df_nuc <- full_join(df_nuc, df_out)
+}
+```
+
+## Data cleaning
+
+### Extract tumor areas
+
+```{r}
+#| eval: true 
+#| echo: false 
+#| message: false 
+
+df_tumor <- df_tumor %>% 
+  mutate(
+    tumor_area = area / (pixel_scale^2)
+  ) %>% 
+  select(
+    date,
+    image,
+    tumor_area
+  )
+
+```
+
+### Clean CD31 segment dataframe
+
+```{r}
+#| eval: true 
+#| echo: false 
+#| message: false 
+
+df_cd31 <- full_join(df_cd31, df_tumor) %>% 
+  filter(
+    nuc_id > 0
+  ) %>% 
+  mutate(
+    cd31_area = area / (pixel_scale^2)
+  ) %>% 
+  mutate(
+    treatment = case_when(
+      grepl('CON32', image) ~ 'CON32',
+      grepl('CON33', image) ~ 'CON33',
+      grepl('CON37', image) ~ 'CON37',
+      grepl('CC31', image) ~ 'CC31',
+      grepl('CC40', image) ~'CC40',
+      grepl('CC45', image) ~ 'CC45'
+    ),
+    condition = case_when(
+      grepl('CON', image) ~ 'Control',
+      grepl('CC', image) ~ 'CC'
+    )
+  ) %>% 
+  select(
+    date,
+    image,
+    condition,
+    treatment,
+    cd31_id,
+    cd31_area,
+    tumor_area
+  )
+
+df_cd31$condition <- factor(
+  df_cd31$condition,
+  levels = c(
+    'Control',
+    'CC'
+  )
+)
+
+unique(df_cd31$condition)
+
+df_cd31$treatment <- factor(
+  df_cd31$treatment,
+  levels = c(
+    'CON32',
+    'CON33',
+    'CON37',
+    'CC31',
+    'CC40',
+    'CC45'    
+  )
+)
+
+unique(df_cd31$treatment)
+any(is.na(df_cd31))
+
+```
+
+### Clean nuclear dataframe
+
+```{r}
+#| eval: true 
+#| echo: false 
+#| message: false 
+
+df_nuc <- full_join(df_nuc, df_tumor) %>% 
+  mutate(
+    nuc_area = area / (pixel_scale^2)
+  ) %>% 
+  mutate(
+    treatment = case_when(
+      grepl('CON32', image) ~ 'CON32',
+      grepl('CON33', image) ~ 'CON33',
+      grepl('CON37', image) ~ 'CON37',
+      grepl('CC31', image) ~ 'CC31',
+      grepl('CC40', image) ~'CC40',
+      grepl('CC45', image) ~ 'CC45'
+    ),
+    condition = case_when(
+      grepl('CON', image) ~ 'Control',
+      grepl('CC', image) ~ 'CC'
+    )
+  ) %>% 
+  mutate(
+    cd31_pos = ifelse(cd31_id > 0, 1, 0)
+  ) %>% 
+  select(
+    date,
+    image,
+    condition,
+    treatment, 
+    nuc_id, 
+    nuc_area, 
+    tumor_area, 
+    cd31_pos,
+    ki67_int
+  )
+
+df_nuc$condition <- factor(
+  df_nuc$condition,
+  levels = c(
+    'Control',
+    'CC'
+  )
+)
+
+unique(df_nuc$condition)
+
+df_nuc$treatment <- factor(
+  df_nuc$treatment,
+  levels = c(
+    'CON32',
+    'CON33',
+    'CON37',
+    'CC31',
+    'CC40',
+    'CC45'    
+  )
+)
+
+unique(df_nuc$treatment)
+any(is.na(df_nuc))
+```
+
+#### Plot Ki67 intensity distribution for threshold
+
+```{r}
+#| eval: true 
+#| echo: false 
+
+df_thresh <- tibble(
+  ki67_thresh = c(17, 10, 5, 4),
+  date = c('07_03', '07_08', '07_28', '07_30')
+)
+
+ggplot(df_nuc, aes(x = ki67_int, group = date)) +
+  geom_histogram(
+    aes(y = after_stat(..density..)),
+    col = 'black',
+    fill = 'white'
+  ) +
+  geom_density(
+    linetype = 2
+  ) +
+  geom_vline(
+    data = df_thresh,
+    aes(xintercept = ki67_thresh),
+    linetype = 1,
+    linewidth = 1,
+    col = 'red'
+  ) +
+  facet_grid(
+   rows = vars(date)
+  ) +
+  scale_x_log10() +
+  theme +
+  labs(
+    title = 'Ki67 intensity threshold',
+    x = 'Intensity [AU]'
+  )
+
+```
+
+#### Assign Ki67 status based on threshold
+
+```{r}
+#| eval: true 
+#| echo: false 
+#| message: false 
+
+df_nuc <- full_join(df_nuc, df_thresh) %>% 
+  mutate(
+    ki67_pos = ifelse(ki67_int >= ki67_thresh, 1, 0)
+  )
+
+```
+
+## Data visualization
+
+### Percent CD31 area / total tumor area
+
+```{r}
+#| eval: true 
+#| echo: false 
+
+df_plot <- df_cd31 %>% 
+  group_by(
+    date,
+    image, 
+    condition, 
+    treatment
+  ) %>% 
+  summarise(
+    cd31_area = sum(cd31_area),
+    tumor_area = mean(tumor_area)
+  ) %>% 
+  mutate(
+    cd31_percent = cd31_area / tumor_area * 100
+  )
+
+```
+
+#### Plot % CD31+ area
+
+```{r}
+#| eval: true 
+#| echo: false 
+
+ggplot(df_plot, aes(x = treatment, y = cd31_percent, fill = condition)) +
+  geom_jitter(
+    width = 0.35,
+    alpha = 0.75,
+    size = 1,
+    show.legend = F
+  ) +
+  geom_violin(
+    width = 0.5, 
+    alpha = 0.75,
+    show.legend = F
+  ) +
+  geom_boxplot(
+    width = 0.1,
+    alpha = 1,
+    show.legend = F,
+    outlier.size = -1
+  ) +
+  theme + 
+  labs(
+    title = 'CD31+ percent area per tumor',
+    y = 'Percent [%]',
+    x = 'Treatment'
+  ) +
+  scale_y_log10() +
+  annotation_logticks(
+    base = 10,
+    sides = 'l'
+  )
+
+plotname <- 'cd31_percent.png'
+ggsave(plotname, plot = last_plot(), path = output_path, width = 12,
+       height = 8, dpi = 150)
+```
+
+### Percent Ki67+ area / tumor area
+
+```{r}
+#| eval: true 
+#| echo: false 
+#| message: false 
+
+df_plot <- df_nuc %>% 
+  filter(
+    ki67_pos > 0
+  ) %>% 
+  group_by(
+    date,
+    image, 
+    condition, 
+    treatment
+  ) %>% 
+  summarise(
+    nuc_area = sum(nuc_area),
+    tumor_area = mean(tumor_area)
+  ) %>% 
+  mutate(
+    ki67_percent = nuc_area / tumor_area * 100
+  )
+
+```
+
+#### Plot % Ki67 area
+
+```{r}
+#| eval: true 
+#| echo: false 
+
+ggplot(df_plot, aes(x = treatment, y = ki67_percent, fill = condition)) +
+  geom_jitter(
+    width = 0.35,
+    alpha = 0.75,
+    size = 1,
+    show.legend = F
+  ) +
+  geom_violin(
+    width = 0.5, 
+    alpha = 0.75,
+    show.legend = F
+  ) +
+  geom_boxplot(
+    width = 0.1,
+    alpha = 1,
+    show.legend = F,
+    outlier.size = -1
+  ) +
+  theme + 
+  labs(
+    title = 'Ki67+ percent area per tumor',
+    y = 'Percent [%]',
+    x = 'Treatment'
+  ) 
+
+plotname <- 'ki67_percent.png'
+ggsave(plotname, plot = last_plot(), path = output_path, width = 12,
+       height = 8, dpi = 150)
+```
+
+### Percent of CD31+/Ki67+ / total CD31+ cells
+
+```{r}
+#| eval: true 
+#| echo: false 
+#| message: false 
+
+df_plot <- df_nuc %>% 
+  mutate(
+    cd31_ki67_pos = ifelse(cd31_pos > 0 & ki67_pos > 0, 1, 0)
+  ) %>% 
+  group_by(
+    date, 
+    image, 
+    condition, 
+    treatment
+  ) %>% 
+  summarise(
+    total_cd31 = sum(cd31_pos),
+    total_cd31_ki67 = sum(cd31_ki67_pos)
+  ) %>% 
+  mutate(
+    percent_cd31_ki67 = total_cd31_ki67 / total_cd31 * 100
+  )
+
+```
+
+#### Plot % CD31+/Ki67+ over CD31+ cells
+
+```{r}
+#| eval: true 
+#| echo: false 
+
+ggplot(df_plot, aes(x = treatment, y = percent_cd31_ki67, fill = condition)) +
+  geom_jitter(
+    width = 0.35,
+    alpha = 0.75,
+    size = 1,
+    show.legend = F
+  ) +
+  geom_violin(
+    width = 0.5, 
+    alpha = 0.75,
+    show.legend = F
+  ) +
+  geom_boxplot(
+    width = 0.1,
+    alpha = 1,
+    show.legend = F,
+    outlier.size = -1
+  ) +
+  theme + 
+  labs(
+    title = 'Percent CD31+/Ki67+ cells over CD31+ cells',
+    y = 'Percent [%]',
+    x = 'Treatment'
+  ) 
+
+plotname <- 'cd31_ki67_percent.png'
+ggsave(plotname, plot = last_plot(), path = output_path, width = 12,
+       height = 8, dpi = 150)
+```
+
+## Export spreadsheet
+
+```{r}
+#| eval: true 
+
+csv_name <- 'cd31_output.csv'
+csv_path <- file.path(output_path, csv_name)
+write_csv(df_cd31, csv_path)
+
+# csv_name <- 'nuc_output.csv'
+# csv_path <- file.path(output_path, csv_name)
+# write_csv(df_nuc, csv_path)
+```
+
+```{r}
+#| eval: true 
+
+print(unique(df_nuc$treatment))
+treatment_list <- unique(df_nuc$treatment)
+
+for(treatment_name in treatment_list){
+  df_out <- df_nuc %>% 
+    filter(treatment == treatment_name)
+  csv_name <- paste(treatment_name, '.csv', sep = '')
+  csv_path <- file.path(output_path, csv_name)
+  write_csv(df_out, csv_path)
+}
+```

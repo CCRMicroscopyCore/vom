@@ -1,0 +1,946 @@
+---
+title: "CD45_analysis"
+subtitle: "Mai Tram Vo / Giovanna Tosato lab"
+date: "2025-07-24"
+author: "Andy D. Tran, CCR Microscopy Core, LCBG, CCR, NCI"
+format:
+  html:
+    toc: true
+    self-contained: true
+    code-fold: true
+    theme: cerulean
+execute: 
+  eval: false
+editor: visual
+---
+
+![](images/Confocal_core_icon_transparent_small.png)
+
+# Overview
+
+![](images/clipboard-1830822715.png)
+
+Cellpose models trained using HPC Biowulf. CD45 cell segmentation based on green CD45 channel with DAPI channel for split. Used custom trained model '*vom_cd45_cell_01*' based on *cyto3*. Nuclear segmentation based on DAPI channel. Used custom trained model '*vom_cd45_nuclei_01*' based on *nuclei*.
+
+v2: Updated cell model to '*vom_cd45_cell_02*'
+
+![](images/clipboard-3293837469.png)
+
+# Image analysis
+
+Written in Python (v3.12.9).
+
+## Setup
+
+```{python}
+#| label: Python setup 
+
+import os
+import numpy as np 
+import pandas as pd
+import napari
+import re
+
+from scipy import ndimage as nd
+from tifffile import imread, imwrite
+from cellpose import models
+from skimage.measure import label, regionprops
+from tqdm import tqdm
+```
+
+### Define image path and image list
+
+```{python}
+
+base_path = r'/Volumes/LECIMAGE/Analysis/[NCI] [LCO] Giovanna Tosato/Mai Tram Vo/images/cd45_analysis/07_15'
+
+tmp_list = os.listdir(base_path)
+img_list = [] 
+
+for tmp in tmp_list:
+  if re.search('0...tif', tmp):
+    img_list.append(tmp)
+    
+print(img_list)
+print(len(img_list))
+```
+
+### Set Cellpose model paths
+
+```{python}
+
+nuc_model_path = '/Volumes/LECIMAGE/Analysis/[NCI] [LCO] Giovanna Tosato/Mai Tram Vo/training/nuclei/models/vom_cd45_nuclei_01'
+nuc_model = models.CellposeModel(gpu = True, pretrained_model = nuc_model_path)
+
+cell_model_path = '/Volumes/LECIMAGE/Analysis/[NCI] [LCO] Giovanna Tosato/Mai Tram Vo/training/cd45_02/models/vom_cd45_cell_02'
+cell_model = models.CellposeModel(gpu = True, pretrained_model = cell_model_path)
+```
+
+## Nuclear and CD45 cell segmentation
+
+```{python}
+
+for img_name in img_list:
+  print(img_name)
+  print(str(img_list.index(img_name)) + '/' + str(len(img_list)))
+  
+  img_path = os.path.join(base_path, img_name)
+  img = imread(img_path)
+  print(img.shape)
+  
+  img_dapi = img[0, :, :]
+  
+  cell_label, flows, styles = cell_model.eval(img, channels = [2, 1])
+  cell_label_path = os.path.join(base_path, img_name.replace('.tif', '_cell.tif'))
+  imwrite(cell_label_path, cell_label)
+  
+  nuc_label, flows, styles = nuc_model.eval(img_dapi, channels = [1, 0])
+  nuc_label_path = os.path.join(base_path, img_name.replace('.tif', '_nuc.tif'))
+  imwrite(nuc_label_path, nuc_label)
+```
+
+## View segmentation
+
+```{python}
+
+img_name = img_list[0]
+print(img_name)
+
+img_path = os.path.join(base_path, img_name)
+nuc_label_path = os.path.join(base_path, img_name.replace('.tif', '_nuc.tif'))
+cell_label_path = os.path.join(base_path, img_name.replace('.tif', '_cell.tif'))
+
+img = imread(img_path)
+img_dapi = img[0, :, :]
+img_cd45 = img[1, :, :]
+
+nuc_label = imread(nuc_label_path)
+cell_label = imread(cell_label_path)
+
+viewer = napari.Viewer()
+
+dapi_layer = viewer.add_image(
+  img_dapi,
+  colormap = 'blue',
+  blending = 'additive'
+)
+
+cd45_layer = viewer.add_image(
+  img_cd45,
+  colormap = 'red',
+  blending = 'additive'
+)
+
+cell_layer = viewer.add_labels(
+  cell_label
+)
+
+nuc_layer = viewer.add_labels(
+  nuc_label
+)
+
+napari.run()
+```
+
+### Control
+
+::: panel-tabset
+#### Original
+
+![Original](images/con_orig-02.png)
+
+#### CD45 cell segment
+
+![CD45+ cell](images/con_cd45-02.png)
+
+#### Nuclear segment
+
+![All nuclei](images/con_nuc-02.png)
+:::
+
+### CC
+
+::: panel-tabset
+#### Original
+
+![Original](images/cc_orig-02.png)
+
+#### CD45 segment
+
+![CD45+ cell](images/cc_cd45-02.png)
+
+#### Nuclear segment
+
+![All nuclei](images/cc_nuc-02.png)
+:::
+
+## Image quantification
+
+### Define quant function
+
+```{python}
+
+def roi_quant(label, img_cd45):
+  df = pd.DataFrame()
+  
+  cell_id = []
+  area = [] 
+  int_cd45 = []
+  
+  roiprops = regionprops(label, intensity_image = img_cd45)
+  for roi in tqdm(range(len(roiprops))):
+    cell_id.append(roiprops[roi].label)
+    area.append(roiprops[roi].area)
+    int_cd45.append(roiprops[roi].mean_intensity)
+    
+  df['cell_id'] = cell_id
+  df['area'] = area
+  df['int_cd45'] = int_cd45
+  
+  return df
+```
+
+### Quantify images
+
+```{python}
+
+for img_name in img_list:
+  print(img_name)
+  print(str(img_list.index(img_name)) + '/' + str(len(img_list)))
+  
+  img_path = os.path.join(base_path, img_name)
+  nuc_label_path = os.path.join(base_path, img_name.replace('.tif', '_nuc.tif'))
+  cell_label_path = os.path.join(base_path, img_name.replace('.tif', '_cell.tif'))
+  
+  img = imread(img_path)
+  img_dapi = img[0, :, :]
+  img_cd45 = img[1, :, :]
+  
+  nuc_label = imread(nuc_label_path)
+  cell_label = imread(cell_label_path)
+  
+  df_nuc = roi_quant(nuc_label, img_cd45)
+  df_nuc_path = os.path.join(base_path, img_name.replace('.tif', '_nuc.csv'))
+  df_nuc.to_csv(df_nuc_path, header = True)
+  
+  df_cell = roi_quant(cell_label, img_cd45)
+  df_cell_path = os.path.join(base_path, img_name.replace('.tif', '_cell.csv'))
+  df_cell.to_csv(df_cell_path, header = True)
+```
+
+# Data analysis
+
+Written in R v4.5.0
+
+## Load libraries and theme
+
+```{r}
+#| label: R setup
+#| eval: true
+#| echo: false
+#| message: false 
+
+library(tidyverse)
+
+theme <- theme(panel.grid.major=element_blank(),
+               panel.grid.minor=element_blank(),
+               panel.background=element_blank(),
+               axis.line=element_line(color="black", linewidth=1),
+               axis.ticks=element_line(color="black", linewidth=1),
+               text=element_text(size=18),
+               plot.title=element_text(size=24),
+               axis.text=element_text(color="black"),
+               plot.margin=unit(c(0.5, 0.5, 0.5, 0.5), "cm"))
+```
+
+## Download data
+
+### Define data open function
+
+```{r}
+#| eval: true
+#| echo: false 
+#| message: false
+
+csv_open <- function(base_path, output_name){
+  csv_list <- list.files(base_path, pattern = output_name)
+  for(csv_name in csv_list){
+    csv_path <- file.path(base_path, csv_name)
+    print(csv_name)
+    csv_tmp <- read_csv(csv_path) %>% 
+      mutate(image = str_replace(csv_name, output_name, '')) %>% 
+      mutate(
+        cell_id = as.integer(cell_id),
+        area = as.integer(area),
+        int_cd45 = as.numeric(int_cd45)
+      ) %>% 
+      select(
+        image,
+        cell_id,
+        area,
+        int_cd45
+      )
+    df_tmp <- full_join(df_tmp, csv_tmp)
+  }
+  return(df_tmp)
+}
+```
+
+### Define path
+
+```{r}
+#| eval: true 
+
+base_path = '/Volumes/LECIMAGE/Analysis/[NCI] [LCO] Giovanna Tosato/Mai Tram Vo/images/cd45_analysis/07_15'
+
+output_path = '/Volumes/LECIMAGE/Analysis/[NCI] [LCO] Giovanna Tosato/Mai Tram Vo/results/cd45_analysis/07_15'
+
+```
+
+### Fetch data
+
+```{r}
+#| eval: true 
+#| echo: false 
+#| message: false
+
+df_tmp <- tibble(
+  image = character(),
+  cell_id = integer(),
+  area = integer(),
+  int_cd45 = numeric()
+)
+
+nuc_df <- csv_open(base_path, '_nuc.csv')
+cell_df <- csv_open(base_path, '_cell.csv')
+
+```
+
+## Data cleaning
+
+### Get total cell counts
+
+```{r}
+#| eval: true 
+#| message: false 
+
+nuc_summary_df <- nuc_df %>% 
+  group_by(image) %>% 
+  summarise(total_cell = n())
+
+```
+
+### Merge with CD45 data
+
+```{r}
+#| eval: true 
+#| echo: true 
+
+df <- full_join(cell_df, nuc_summary_df) %>% 
+  mutate(
+    treatment = case_when(
+      grepl('CON32', image) ~ 'CON32',
+      grepl('CON33', image) ~ 'CON33',
+      grepl('CON37', image) ~ 'CON37',
+      grepl('CC31', image) ~ 'CC31',
+      grepl('CC40', image) ~'CC40',
+      grepl('CC45', image) ~ 'CC45'
+    ),
+    condition = case_when(
+      grepl('CON', image) ~ 'Control',
+      grepl('CC', image) ~ 'CC'
+    )
+  ) %>% 
+  select(
+    image,
+    condition,
+    treatment,
+    cell_id,
+    area,
+    int_cd45,
+    total_cell
+  )
+
+df$condition <- factor(
+  df$condition,
+  levels = c(
+    'Control',
+    'CC'
+  )
+)
+
+unique(df$condition)
+
+df$treatment <- factor(
+  df$treatment,
+  levels = c(
+    'CON32',
+    'CON33',
+    'CON37',
+    'CC31',
+    'CC40',
+    'CC45'
+  )
+)
+
+unique(df$treatment)
+any(is.na(df))
+```
+
+## Data visualization
+
+### Percent CD45+ cells
+
+#### Calculate CD45+ percentage / total cells
+
+```{r}
+#| eval: true 
+#| echo: false 
+
+df_plot <- df %>% 
+  group_by(
+    image,
+    condition,
+    treatment
+  ) %>% 
+  summarise(
+    cd45_count = n(),
+    total_cell = mean(total_cell)
+  ) %>% 
+  mutate(
+    cd45_percent = cd45_count / total_cell * 100
+  )
+
+```
+
+#### Plot CD45+ percent
+
+```{r}
+#| eval: true 
+#| echo: false 
+
+ggplot(df_plot, aes(x = treatment, y = cd45_percent, fill = condition)) +
+  geom_jitter(
+    width = 0.35,
+    alpha = 0.75,
+    size = 1,
+    show.legend = F
+  ) +
+  geom_violin(
+    width = 0.5, 
+    alpha = 0.75,
+    show.legend = F
+  ) +
+  geom_boxplot(
+    width = 0.1,
+    alpha = 1,
+    show.legend = F,
+    outlier.size = -1
+  ) +
+  theme + 
+  labs(
+    title = 'CD45+ percent per image',
+    y = 'Percent [%]',
+    x = 'Treatment'
+  )
+
+plotname <- 'cd45_percent.png'
+ggsave(plotname, plot = last_plot(), path = output_path, width = 12,
+       height = 8, dpi = 150)
+
+```
+
+### CD45 intensity
+
+#### Plot CD45 intensity
+
+```{r}
+#| eval: true 
+#| echo: false 
+
+ggplot(df, aes(x = treatment, y = int_cd45, fill = condition)) +
+  geom_jitter(
+    width = 0.35,
+    alpha = 0.05,
+    size = 1,
+    show.legend = F
+  ) +
+  geom_violin(
+    width = 0.5, 
+    alpha = 0.75,
+    show.legend = F
+  ) +
+  geom_boxplot(
+    width = 0.1,
+    alpha = 1,
+    show.legend = F,
+    outlier.size = -1
+  ) +
+  theme + 
+  labs(
+    title = 'CD45+ mean intensity',
+    y = 'Intensity [AU]',
+    x = 'Treatment'
+  )
+
+plotname <- 'cd45_intensity.png'
+ggsave(plotname, plot = last_plot(), path = output_path, width = 12,
+       height = 8, dpi = 150)
+```
+
+### CD45+ cell area
+
+#### Plot area
+
+```{r}
+#| eval: true 
+#| echo: false 
+
+ggplot(df, aes(x = treatment, y = area, fill = condition)) +
+  geom_jitter(
+    width = 0.35,
+    alpha = 0.05,
+    size = 1,
+    show.legend = F
+  ) +
+  geom_violin(
+    width = 0.5, 
+    alpha = 0.75,
+    show.legend = F
+  ) +
+  geom_boxplot(
+    width = 0.1,
+    alpha = 1,
+    show.legend = F,
+    outlier.size = -1
+  ) +
+  theme + 
+  labs(
+    title = 'CD45+ cell area',
+    y = 'Area [pixels]',
+    x = 'Treatment'
+  )
+
+plotname <- 'cd45_area.png'
+ggsave(plotname, plot = last_plot(), path = output_path, width = 12,
+       height = 8, dpi = 150)
+```
+
+## Export spreadsheet
+
+```{r}
+#| eval: false 
+
+csv_name <- 'cd45_output.csv'
+csv_path <- file.path(output_path, csv_name)
+
+write_csv(df, csv_path)
+```
+
+## Re-analysis with thresholds
+
+![](images/clipboard-3766299467.png)
+
+### Threshold = 70
+
+```{r}
+#| eval: true 
+#| echo: false 
+
+df_threshold <- df %>% 
+  filter(int_cd45 >= 70)
+
+```
+
+::: panel-tabset
+#### Percent CD45+ cells
+
+```{r}
+#| eval: true 
+#| echo: false 
+
+df_plot <- df_threshold %>% 
+  group_by(
+    image,
+    condition,
+    treatment
+  ) %>% 
+  summarise(
+    cd45_count = n(),
+    total_cell = mean(total_cell)
+  ) %>% 
+  mutate(
+    cd45_percent = cd45_count / total_cell * 100
+  )
+
+ggplot(df_plot, aes(x = treatment, y = cd45_percent, fill = condition)) +
+  geom_jitter(
+    width = 0.35,
+    alpha = 0.75,
+    size = 1,
+    show.legend = F
+  ) +
+  geom_violin(
+    width = 0.5, 
+    alpha = 0.75,
+    show.legend = F
+  ) +
+  geom_boxplot(
+    width = 0.1,
+    alpha = 1,
+    show.legend = F,
+    outlier.size = -1
+  ) +
+  theme + 
+  labs(
+    title = 'CD45+ percent per image',
+    y = 'Percent [%]',
+    x = 'Treatment'
+  )
+
+plotname <- 'cd45_percent_thresh70.png'
+ggsave(plotname, plot = last_plot(), path = output_path, width = 12,
+       height = 8, dpi = 150)
+```
+
+#### CD45 intensity
+
+```{r}
+#| eval: true 
+#| echo: false 
+
+ggplot(df_threshold, aes(x = treatment, y = int_cd45, fill = condition)) +
+  geom_jitter(
+    width = 0.35,
+    alpha = 0.25,
+    size = 1,
+    show.legend = F
+  ) +
+  geom_violin(
+    width = 0.5, 
+    alpha = 0.75,
+    show.legend = F
+  ) +
+  geom_boxplot(
+    width = 0.1,
+    alpha = 1,
+    show.legend = F,
+    outlier.size = -1
+  ) +
+  theme + 
+  labs(
+    title = 'CD45+ mean intensity',
+    y = 'Intensity [AU]',
+    x = 'Treatment'
+  )
+
+plotname <- 'cd45_intensity_thresh70.png'
+ggsave(plotname, plot = last_plot(), path = output_path, width = 12,
+       height = 8, dpi = 150)
+```
+
+#### CD45+ cell area
+
+```{r}
+#| eval: true 
+#| echo: false 
+
+ggplot(df_threshold, aes(x = treatment, y = area, fill = condition)) +
+  geom_jitter(
+    width = 0.35,
+    alpha = 0.25,
+    size = 1,
+    show.legend = F
+  ) +
+  geom_violin(
+    width = 0.5, 
+    alpha = 0.75,
+    show.legend = F
+  ) +
+  geom_boxplot(
+    width = 0.1,
+    alpha = 1,
+    show.legend = F,
+    outlier.size = -1
+  ) +
+  theme + 
+  labs(
+    title = 'CD45+ cell area',
+    y = 'Area [pixels]',
+    x = 'Treatment'
+  )
+
+plotname <- 'cd45_area_thresh70.png'
+ggsave(plotname, plot = last_plot(), path = output_path, width = 12,
+       height = 8, dpi = 150)
+```
+:::
+
+### Threshold = 60
+
+```{r}
+#| eval: true 
+#| echo: false 
+
+df_threshold <- df %>% 
+  filter(int_cd45 >= 60)
+
+```
+
+::: panel-tabset
+#### Percent CD45+ cells
+
+```{r}
+#| eval: true 
+#| echo: false 
+
+df_plot <- df_threshold %>% 
+  group_by(
+    image,
+    condition,
+    treatment
+  ) %>% 
+  summarise(
+    cd45_count = n(),
+    total_cell = mean(total_cell)
+  ) %>% 
+  mutate(
+    cd45_percent = cd45_count / total_cell * 100
+  )
+
+ggplot(df_plot, aes(x = treatment, y = cd45_percent, fill = condition)) +
+  geom_jitter(
+    width = 0.35,
+    alpha = 0.75,
+    size = 1,
+    show.legend = F
+  ) +
+  geom_violin(
+    width = 0.5, 
+    alpha = 0.75,
+    show.legend = F
+  ) +
+  geom_boxplot(
+    width = 0.1,
+    alpha = 1,
+    show.legend = F,
+    outlier.size = -1
+  ) +
+  theme + 
+  labs(
+    title = 'CD45+ percent per image',
+    y = 'Percent [%]',
+    x = 'Treatment'
+  )
+
+plotname <- 'cd45_percent_thresh60.png'
+ggsave(plotname, plot = last_plot(), path = output_path, width = 12,
+       height = 8, dpi = 150)
+```
+
+#### CD45 intensity
+
+```{r}
+#| eval: true 
+#| echo: false 
+
+ggplot(df_threshold, aes(x = treatment, y = int_cd45, fill = condition)) +
+  geom_jitter(
+    width = 0.35,
+    alpha = 0.25,
+    size = 1,
+    show.legend = F
+  ) +
+  geom_violin(
+    width = 0.5, 
+    alpha = 0.75,
+    show.legend = F
+  ) +
+  geom_boxplot(
+    width = 0.1,
+    alpha = 1,
+    show.legend = F,
+    outlier.size = -1
+  ) +
+  theme + 
+  labs(
+    title = 'CD45+ mean intensity',
+    y = 'Intensity [AU]',
+    x = 'Treatment'
+  )
+
+plotname <- 'cd45_intensity_thresh60.png'
+ggsave(plotname, plot = last_plot(), path = output_path, width = 12,
+       height = 8, dpi = 150)
+```
+
+#### CD45+ cell area
+
+```{r}
+#| eval: true 
+#| echo: false 
+
+ggplot(df_threshold, aes(x = treatment, y = area, fill = condition)) +
+  geom_jitter(
+    width = 0.35,
+    alpha = 0.25,
+    size = 1,
+    show.legend = F
+  ) +
+  geom_violin(
+    width = 0.5, 
+    alpha = 0.75,
+    show.legend = F
+  ) +
+  geom_boxplot(
+    width = 0.1,
+    alpha = 1,
+    show.legend = F,
+    outlier.size = -1
+  ) +
+  theme + 
+  labs(
+    title = 'CD45+ cell area',
+    y = 'Area [pixels]',
+    x = 'Treatment'
+  )
+
+plotname <- 'cd45_area_thresh60.png'
+ggsave(plotname, plot = last_plot(), path = output_path, width = 12,
+       height = 8, dpi = 150)
+```
+:::
+
+### Threshold = 50
+
+```{r}
+#| eval: true 
+#| echo: false 
+
+df_threshold <- df %>% 
+  filter(int_cd45 >= 50)
+```
+
+::: panel-tabset
+#### Percent CD45+ cells
+
+```{r}
+#| eval: true 
+#| echo: false 
+
+df_plot <- df_threshold %>% 
+  group_by(
+    image,
+    condition,
+    treatment
+  ) %>% 
+  summarise(
+    cd45_count = n(),
+    total_cell = mean(total_cell)
+  ) %>% 
+  mutate(
+    cd45_percent = cd45_count / total_cell * 100
+  )
+
+ggplot(df_plot, aes(x = treatment, y = cd45_percent, fill = condition)) +
+  geom_jitter(
+    width = 0.35,
+    alpha = 0.75,
+    size = 1,
+    show.legend = F
+  ) +
+  geom_violin(
+    width = 0.5, 
+    alpha = 0.75,
+    show.legend = F
+  ) +
+  geom_boxplot(
+    width = 0.1,
+    alpha = 1,
+    show.legend = F,
+    outlier.size = -1
+  ) +
+  theme + 
+  labs(
+    title = 'CD45+ percent per image',
+    y = 'Percent [%]',
+    x = 'Treatment'
+  )
+
+plotname <- 'cd45_percent_thresh50.png'
+ggsave(plotname, plot = last_plot(), path = output_path, width = 12,
+       height = 8, dpi = 150)
+```
+
+#### CD45 intensity
+
+```{r}
+#| eval: true 
+#| echo: false 
+
+ggplot(df_threshold, aes(x = treatment, y = int_cd45, fill = condition)) +
+  geom_jitter(
+    width = 0.35,
+    alpha = 0.25,
+    size = 1,
+    show.legend = F
+  ) +
+  geom_violin(
+    width = 0.5, 
+    alpha = 0.75,
+    show.legend = F
+  ) +
+  geom_boxplot(
+    width = 0.1,
+    alpha = 1,
+    show.legend = F,
+    outlier.size = -1
+  ) +
+  theme + 
+  labs(
+    title = 'CD45+ mean intensity',
+    y = 'Intensity [AU]',
+    x = 'Treatment'
+  )
+
+plotname <- 'cd45_intensity_thresh50.png'
+ggsave(plotname, plot = last_plot(), path = output_path, width = 12,
+       height = 8, dpi = 150)
+```
+
+#### CD45+ cell area
+
+```{r}
+#| eval: true 
+#| echo: false 
+
+ggplot(df_threshold, aes(x = treatment, y = area, fill = condition)) +
+  geom_jitter(
+    width = 0.35,
+    alpha = 0.25,
+    size = 1,
+    show.legend = F
+  ) +
+  geom_violin(
+    width = 0.5, 
+    alpha = 0.75,
+    show.legend = F
+  ) +
+  geom_boxplot(
+    width = 0.1,
+    alpha = 1,
+    show.legend = F,
+    outlier.size = -1
+  ) +
+  theme + 
+  labs(
+    title = 'CD45+ cell area',
+    y = 'Area [pixels]',
+    x = 'Treatment'
+  )
+
+plotname <- 'cd45_area_thresh50.png'
+ggsave(plotname, plot = last_plot(), path = output_path, width = 12,
+       height = 8, dpi = 150)
+```
+:::
